@@ -1,91 +1,170 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, f1_score
+#!/usr/bin/env python3
+"""
+Breast Cancer Prediction - Main Pipeline
+End-to-end machine learning pipeline for breast cancer prediction using Naive Bayes.
+"""
 
-sns.set_style("darkgrid")  # set the style
+import logging
+import sys
+import os
+from pathlib import Path
 
-# Import dataset
-data = pd.read_csv("Breast_cancer_data.csv")  # read the csv file
-# print(data.head(10))  # show the first 10 rows
+# Add src to path for imports
+sys.path.append(str(Path(__file__).parent / "src"))
 
-# Basic EDA
-# print(data["diagnosis"].hist())  # show the histmap
+from src.preprocessing import DataPreprocessor, load_and_prepare_data
+from src.models import train_and_evaluate_models, ModelEvaluator
+from src.visualize import create_visualization_report, DataVisualizer
+from src.utils import validate_data, generate_model_report, create_experiment_log, check_data_quality
 
-corr = data.iloc[:, :-1].corr(method="pearson")  # pearson method
-cmap = sns.diverging_palette(250, 354, 80, 60, center="dark",
-                             as_cmap=True)  # style
-sns.heatmap(corr, vmax=1, vmin=-.5, cmap=cmap, square=True,
-            linewidths=.2)  # show the heatmap
-
-# pick the relatively independent variables
-data = data[["mean_radius", "mean_texture", "mean_smoothness", "diagnosis"]]
-data.head(10)
-
-# normal distribution or not
-fig, axes = plt.subplot(1, 3, figsize=(18, 6), sharey=True)
-sns.histplot(data, ax=axes[0], x="mean_radius", kde=True, color='r')
-sns.histplot(data, ax=axes[1], x="mean_smoothness", kde=True, color='b')
-sns.histplot(data, ax=axes[2], x="mean_texture", kde=True)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('breast_cancer_prediction.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
-# calculate P(Y=y) for all possible y
-def calculate_prior(df, Y):
-    classes = sorted(list(df[Y].unique()))
-    prior = []
-    for i in classes:
-        prior.append(len(df[df[Y] == i]) / len(df))
-    return prior
+def main():
+    """Main function to run the complete breast cancer prediction pipeline."""
+    
+    print("=" * 60)
+    print("BREAST CANCER PREDICTION PIPELINE")
+    print("=" * 60)
+    
+    try:
+        # Step 1: Data Loading and Validation
+        logger.info("Step 1: Loading and validating data...")
+        preprocessor = DataPreprocessor("Breast_cancer_data.csv")
+        
+        # Load data
+        data = preprocessor.load_data()
+        
+        # Get basic info
+        info = preprocessor.get_basic_info()
+        print(f"\nDataset Info:")
+        print(f"  Shape: {info['shape']}")
+        print(f"  Features: {len(info['columns']) - 1}")
+        print(f"  Target distribution: {info['target_distribution']}")
+        
+        # Validate data
+        feature_cols = ["mean_radius", "mean_texture", "mean_smoothness"]
+        if not validate_data(data, feature_cols):
+            logger.error("Data validation failed. Exiting.")
+            return
+        
+        # Check data quality
+        quality_report = check_data_quality(data)
+        print(f"\nData Quality Report:")
+        print(f"  Memory usage: {quality_report['memory_usage_mb']:.2f} MB")
+        print(f"  Duplicate rows: {quality_report['duplicate_rows']}")
+        print(f"  Missing values: {sum(quality_report['missing_values'].values())}")
+        
+        # Step 2: Data Preparation
+        logger.info("Step 2: Preparing data for modeling...")
+        
+        # Prepare data for both Gaussian and Categorical models
+        train_data_gaussian, test_data_gaussian = preprocessor.prepare_data_for_modeling(categorical=False)
+        train_data_categorical, test_data_categorical = preprocessor.prepare_data_for_modeling(categorical=True)
+        
+        print(f"\nData Split:")
+        print(f"  Gaussian model - Train: {len(train_data_gaussian)}, Test: {len(test_data_gaussian)}")
+        print(f"  Categorical model - Train: {len(train_data_categorical)}, Test: {len(test_data_categorical)}")
+        
+        # Step 3: Model Training and Evaluation
+        logger.info("Step 3: Training and evaluating models...")
+        
+        # Train and evaluate Gaussian model
+        print("\nTraining Gaussian Naive Bayes...")
+        results_gaussian = train_and_evaluate_models(train_data_gaussian, test_data_gaussian)
+        
+        # Train and evaluate Categorical model
+        print("\nTraining Categorical Naive Bayes...")
+        results_categorical = train_and_evaluate_models(train_data_categorical, test_data_categorical)
+        
+        # Combine results
+        all_results = {
+            'gaussian': results_gaussian['gaussian'],
+            'categorical': results_categorical['categorical']
+        }
+        
+        # Step 4: Visualization
+        logger.info("Step 4: Creating visualizations...")
+        
+        # Create visualization report
+        create_visualization_report(
+            data=data,
+            results=all_results,
+            feature_cols=feature_cols,
+            save_dir="plots"
+        )
+        
+        # Step 5: Generate Reports
+        logger.info("Step 5: Generating reports...")
+        
+        # Generate comprehensive model report
+        report_text = generate_model_report(
+            results=all_results,
+            feature_names=feature_cols,
+            save_path="model_evaluation_report.txt"
+        )
+        
+        print("\n" + report_text)
+        
+        # Create experiment log
+        experiment_params = {
+            "features": feature_cols,
+            "test_size": 0.2,
+            "random_state": 42,
+            "models": ["gaussian_naive_bayes", "categorical_naive_bayes"]
+        }
+        
+        create_experiment_log(
+            experiment_name="breast_cancer_prediction",
+            parameters=experiment_params,
+            results=all_results
+        )
+        
+        # Step 6: Summary
+        logger.info("Step 6: Pipeline completed successfully!")
+        
+        print("\n" + "=" * 60)
+        print("PIPELINE SUMMARY")
+        print("=" * 60)
+        
+        best_model = max(all_results.keys(), key=lambda x: all_results[x]['accuracy'])
+        best_accuracy = all_results[best_model]['accuracy']
+        
+        print(f"✅ Best Model: {best_model.replace('_', ' ').title()}")
+        print(f"✅ Best Accuracy: {best_accuracy:.4f}")
+        print(f"✅ Models Trained: {len(all_results)}")
+        print(f"✅ Visualizations: Saved to 'plots/' directory")
+        print(f"✅ Reports: Saved to 'model_evaluation_report.txt'")
+        print(f"✅ Logs: Saved to 'breast_cancer_prediction.log'")
+        
+        if best_accuracy > 0.95:
+            print("Excellent performance achieved!")
+        elif best_accuracy > 0.90:
+            print("Good performance achieved!")
+        else:
+            print("Performance could be improved.")
+        
+        print("\nPipeline completed successfully!")
+        
+    except FileNotFoundError as e:
+        logger.error(f"File not found: {e}")
+        print(f"Error: Could not find the dataset file. Please ensure 'Breast_cancer_data.csv' is in the current directory.")
+        
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}")
+        print(f"Error: Pipeline failed with error: {e}")
+        raise
 
 
-# Approach 1: Calculate P(X=x|Y=y) using Gaussian dist.
-def calculate_likelihood_gaussian(df, feat_name, feat_val, Y, label):
-    feat = list(df.columns)
-    df = df[df[Y] == label]
-    mean, std = df[feat_name].mean(), df[feat_name].std()
-    p_x_given_y = (1 / (np.sqrt(2 * np.pi) * std)) * np.exp(-((feat_val-mean)**2 / (2 * std**2)))
-    return p_x_given_y
-
-
-# Calculate P(X=x1|Y=y)P(X=x2|Y=y)...P(X=xn|Y=y) * P(Y=y) for all y and find the maximum
-def naive_bayes_gaussian(df, X, Y):
-    # get feature names
-    features = list(df.columns)[:-1]
-
-    # calculate prior
-    prior = calculate_prior(df, Y)
-
-    Y_pred = []
-    # loop over every data sample
-    for x in X:
-        # calculate likelihood
-        labels = sorted(list(df[Y].unique()))
-        likelihood = [1] * len(labels)
-        for j in range(len(labels)):
-            for i in range(len(features)):
-                likelihood[j] *= calculate_likelihood_gaussian(df, features[i],
-                                                               x[i], Y,
-                                                               labels[j])
-
-        # calculate posterior probability (numerator only)
-        post_prob = [1] * len(labels)
-        for j in range(len(labels)):
-            post_prob[j] = likelihood[j] * prior[j]
-
-        Y_pred.append(np.argmax(post_prob))
-
-    return np.array(Y_pred)
-
-
-# test Gaussian model
-
-train, test = train_test_split(data, test_size=.2, random_state=41)
-X_test = test.iloc[:,:-1].values
-Y_test = test.iloc[:,-1].values
-Y_pred = naive_bayes_gaussian(train, X=X_test, Y="diagnosis")
-
-print(confusion_matrix(Y_test, Y_pred))
-print(f1_score(Y_test, Y_pred))
+if __name__ == "__main__":
+    main()
 
